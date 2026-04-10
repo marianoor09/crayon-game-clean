@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { Dimensions, Image, SafeAreaView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
+import { Audio } from 'expo-av';
 import Animated, {
   Easing,
   interpolate,
@@ -13,6 +14,7 @@ import Animated, {
   withSequence,
   withTiming
 } from 'react-native-reanimated';
+import { useGame } from '../context/GameContext';
 
 const { width, height } = Dimensions.get('window');
 
@@ -62,6 +64,7 @@ const Particle = ({ i }) => {
 };
 
 export default function HomeScreen({ navigation }) {
+  const { playBgMusic } = useGame();
   const [fontsLoaded, setFontsLoaded] = useState(false);
   const floatValue = useSharedValue(0);
   const glowValue = useSharedValue(0.5);
@@ -93,6 +96,8 @@ export default function HomeScreen({ navigation }) {
       -1,
       true
     );
+
+    playBgMusic();
   }, []);
 
   const heroStyle = useAnimatedStyle(() => ({
@@ -103,6 +108,18 @@ export default function HomeScreen({ navigation }) {
     opacity: glowValue.value,
     transform: [{ scale: interpolate(glowValue.value, [0.5, 1], [1, 1.1]) }],
   }));
+
+  const handlePlay = async () => {
+    try {
+      const { sound } = await Audio.Sound.createAsync(
+        { uri: 'https://cdn.freesound.org/previews/273/273151_4486188-lq.mp3' } // Sweet pop/chime sound
+      );
+      await sound.playAsync();
+    } catch (e) {
+      console.log('Error playing sound');
+    }
+    navigation.navigate('Level');
+  };
 
   return (
     <View style={styles.container}>
@@ -147,7 +164,7 @@ export default function HomeScreen({ navigation }) {
           <TouchableOpacity 
             activeOpacity={0.8} 
             style={styles.playButtonWrapper}
-            onPress={() => navigation.navigate('Game')}
+            onPress={handlePlay}
           >
             <LinearGradient
               colors={['#4ade80', '#166534']}
@@ -166,19 +183,14 @@ export default function HomeScreen({ navigation }) {
             colors={['#1e1b4b', '#0f172a']}
             style={styles.navBar}
           >
-            <TouchableOpacity style={styles.navItem}>
+            <TouchableOpacity style={styles.navItem} onPress={() => navigation.navigate('Home')}>
               <View style={styles.activeNavCircle}>
                 <Ionicons name="home" size={28} color="white" />
               </View>
               <Text style={styles.navTextActive}>LOBBY</Text>
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.navItem}>
-              <Ionicons name="color-palette" size={24} color="#94a3b8" />
-              <Text style={styles.navText}>GALLERY</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.navItem}>
+            <TouchableOpacity style={styles.navItem} onPress={() => navigation.navigate('Level')}>
               <Ionicons name="map" size={24} color="#94a3b8" />
               <Text style={styles.navText}>MAP</Text>
             </TouchableOpacity>

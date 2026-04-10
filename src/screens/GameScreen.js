@@ -1,30 +1,168 @@
-import React, { useState } from 'react';
-import { Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
-import Animated, { useSharedValue, runOnJS } from 'react-native-reanimated';
 import MaskedView from '@react-native-masked-view/masked-view';
-import { Canvas, Path, Group, Skia, Rect } from '@shopify/react-native-skia';
+import { Canvas, Group, Path, Rect, Skia } from '@shopify/react-native-skia';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useState, useEffect, useRef } from 'react';
+import { Audio } from 'expo-av';
+import * as Haptics from 'expo-haptics';
+import { Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
+import Animated, { runOnJS, useSharedValue, useAnimatedStyle, withTiming, withSpring, withSequence } from 'react-native-reanimated';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useGame } from '../context/GameContext';
 
 const { width, height } = Dimensions.get('window');
 const WRAPPER_WIDTH = 62;
-const WRAPPER_HEIGHT = height * 0.65 - 80; // approximate wrapper height
+const WRAPPER_HEIGHT = height * 0.65 - 80;
 
-export default function GameScreen({ navigation }) {
+const AnimatedIcon = Animated.createAnimatedComponent(Ionicons);
+
+const TopStar = ({ index, activeIndex, unwrapped }) => {
+  const isUnlocked = index < activeIndex;
+  const isJustUnwrapped = index === activeIndex && unwrapped;
+  const isActive = isUnlocked || isJustUnwrapped;
+
+  const scale = useSharedValue(isActive ? 1 : 0.6);
+  const opacity = useSharedValue(isActive ? 1 : 0.3);
+
+  useEffect(() => {
+    if (isJustUnwrapped) {
+      scale.value = withSequence(withTiming(1.8, { duration: 250 }), withSpring(1));
+      opacity.value = withTiming(1, { duration: 200 });
+    } else if (isUnlocked) {
+      scale.value = 1;
+      opacity.value = 1;
+    } else {
+      scale.value = 0.6;
+      opacity.value = 0.3;
+    }
+  }, [isUnlocked, isJustUnwrapped]);
+
+  const style = useAnimatedStyle(() => ({
+    transform: [{ scale: scale.value }],
+    opacity: opacity.value,
+  }));
+
+  return (
+    <AnimatedIcon 
+      name="star" 
+      size={18} 
+      color="#fef08a" 
+      style={[{ marginHorizontal: 2 }, style]} 
+    />
+  );
+};
+
+export default function GameScreen({ navigation, route }) {
+  const { targetLevel } = route.params || { targetLevel: 1 };
+  const { unlockedCrayons, currentLevel, crayonsInCurrentLevel, unlockNextCrayon, getCrayonColorData, playBgMusic, pauseBgMusic } = useGame();
+
+  // Local state for the specific crayon within the selected level
+  const [currentCrayonIdx, setCurrentCrayonIdx] = useState(() => {
+    return targetLevel < currentLevel ? 0 : crayonsInCurrentLevel;
+  });
+
   const [unwrapped, setUnwrapped] = useState(false);
+  const isUnwrapped = useSharedValue(false);
+  const scratchScore = useSharedValue(0);
+  const [scratchSound, setScratchSound] = useState(null);
+  const [successSound, setSuccessSound] = useState(null);
   const path = useSharedValue(Skia.Path.Make());
+  const lastScratchTime = useRef(0);
+  const currentGlobalIdx = (targetLevel - 1) * 5 + currentCrayonIdx;
+  const activeColorData = getCrayonColorData(currentGlobalIdx);
+  const activeColor = activeColorData.core;
+
+  useEffect(() => {
+    async function initSound() {
+      const { sound: sq } = await Audio.Sound.createAsync(
+        require('../../assets/wrapper.mp3'),
+        { isLooping: true }
+      );
+      const { sound: win } = await Audio.Sound.createAsync(
+        require('../../assets/sparkling.wav')
+      );
+      setScratchSound(sq);
+      setSuccessSound(win);
+    }
+    initSound();
+
+    pauseBgMusic();
+
+    return () => {
+       scratchSound?.unloadAsync();
+       successSound?.unloadAsync();
+       playBgMusic();
+    };
+  }, []);
+
+  const triggerHaptic = () => {
+    const now = Date.now();
+    if (now - lastScratchTime.current > 150) {
+      lastScratchTime.current = now;
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+  };
+
+  const playScratchFeedback = async () => {
+    if (scratchSound) {
+       const status = await scratchSound.getStatusAsync();
+       if (!status.isPlaying && !isUnwrapped.value) {
+         await scratchSound.playAsync();
+       }
+    }
+  };
+
+  const stopScratchFeedback = async () => {
+    if (scratchSound) {
+       await scratchSound.pauseAsync();
+    }
+  };
+
+  const playSuccessFeedback = async () => {
+    if (scratchSound) {
+       await scratchSound.stopAsync();
+    }
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    if (successSound) {
+       await successSound.playFromPositionAsync(0);
+    }
+  };
 
   const checkUnwrapped = () => {
-    // A simplified heuristic: if user plays around for a while, mark it as unwrapped.
-    // Real complete calculation might involve checking path bounds.
-    setUnwrapped(true);
+    setUnwrapped((prev) => {
+      if (!prev) {
+        isUnwrapped.value = true;
+        playSuccessFeedback();
+        
+        setTimeout(() => {
+          // If we are playing the current 'latest' crayon, advance global progress
+          if (currentGlobalIdx === unlockedCrayons) {
+            unlockNextCrayon();
+          }
+
+          const nextLocalIdx = currentCrayonIdx + 1;
+
+          if (nextLocalIdx === 5) {
+             navigation.replace('Victory', { colorUnlocked: activeColor });
+          } else {
+             // Reset canvas for next crayon color automatically!
+             setCurrentCrayonIdx(nextLocalIdx);
+             isUnwrapped.value = false;
+             scratchScore.value = 0;
+             setUnwrapped(false);
+             path.value = Skia.Path.Make();
+          }
+        }, 1200);
+      }
+      return true;
+    });
   };
 
   const pan = Gesture.Pan()
     .onBegin((e) => {
-      if (!unwrapped) {
+      if (!isUnwrapped.value) {
+        runOnJS(playScratchFeedback)();
         const newPath = path.value.copy();
         newPath.moveTo(e.x, e.y);
         newPath.lineTo(e.x, e.y); // just to start the dot
@@ -32,28 +170,36 @@ export default function GameScreen({ navigation }) {
       }
     })
     .onUpdate((e) => {
-      if (!unwrapped) {
+      if (!isUnwrapped.value) {
+        runOnJS(triggerHaptic)();
         const newPath = path.value.copy();
         newPath.lineTo(e.x, e.y);
         path.value = newPath;
+        scratchScore.value += 1;
       }
     })
     .onEnd(() => {
-      if (!unwrapped) {
-        runOnJS(checkUnwrapped)();
+      if (!isUnwrapped.value) {
+        runOnJS(stopScratchFeedback)();
+        if (scratchScore.value > 150) {
+          runOnJS(checkUnwrapped)();
+        }
       }
+    })
+    .onFinalize(() => {
+      runOnJS(stopScratchFeedback)();
     });
 
   const WrapperElement = (
     <LinearGradient
-      colors={['#fffbeb', '#fef3c7', '#fcd34d']}
+      colors={activeColorData.wrapperColors}
       style={styles.wrapperBg}
       start={{ x: 0, y: 0 }}
       end={{ x: 1, y: 0 }}
     >
       <View style={styles.wrapperLine} />
       <Ionicons name="color-palette" size={28} color="#000" style={{ marginTop: 15 }} />
-      <Text style={styles.wrapperText}>BLUE</Text>
+      <Text style={styles.wrapperText}>CRAYON</Text>
       <Ionicons name="sparkles" size={28} color="#000" style={{ marginBottom: 15 }} />
       <View style={styles.wrapperLine} />
     </LinearGradient>
@@ -63,7 +209,7 @@ export default function GameScreen({ navigation }) {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <LinearGradient colors={['#0f172a', '#1e293b', '#0f172a']} style={styles.container}>
         <SafeAreaView edges={['top', 'bottom']} style={styles.safeArea}>
-          
+
           {/* Header */}
           <View style={styles.header}>
             <LinearGradient
@@ -75,15 +221,21 @@ export default function GameScreen({ navigation }) {
               <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
                 <Ionicons name="arrow-back" size={24} color="#fca5a5" />
               </TouchableOpacity>
-              
+
               <View style={styles.levelContainer}>
-                <Text style={styles.levelTitle}>LEVEL 1</Text>
-                <Text style={styles.levelSub}>2/5 CRAYON COMPLETED</Text>
+                <Text style={styles.levelTitle}>LEVEL {targetLevel}</Text>
+                <Text style={styles.levelSub}>{currentCrayonIdx}/5 CRAYON COMPLETED</Text>
               </View>
-              
-              <View style={styles.coinBadge}>
-                <Text style={styles.coinText}>120</Text>
-                <MaterialCommunityIcons name="currency-usd-circle" size={20} color="#fef08a" />
+
+              <View style={styles.starsBadge}>
+                {[0, 1, 2, 3, 4].map((i) => (
+                  <TopStar 
+                    key={i} 
+                    index={i} 
+                    activeIndex={currentCrayonIdx} 
+                    unwrapped={unwrapped} 
+                  />
+                ))}
               </View>
             </LinearGradient>
           </View>
@@ -91,13 +243,13 @@ export default function GameScreen({ navigation }) {
           <View style={styles.mainContent}>
             {/* Left Playing Area */}
             <View style={styles.playArea}>
-              
+
               {/* Crayon Composition */}
               <View style={styles.crayonContainer}>
-                {/* The Stick (Blue) */}
-                <View style={styles.crayonTop} />
-                <View style={styles.crayonBody} />
-                <View style={styles.crayonBottom} />
+                {/* Dynamic Stick (Uses Context Colors) */}
+                <View style={[styles.crayonTop, { backgroundColor: activeColorData.top }]} />
+                <View style={[styles.crayonBody, { backgroundColor: activeColorData.core }]} />
+                <View style={[styles.crayonBottom, { backgroundColor: activeColorData.bottom }]} />
 
                 {/* The Scratchable Wrapper */}
                 <View style={styles.wrapperPositioner}>
@@ -138,28 +290,38 @@ export default function GameScreen({ navigation }) {
             {/* Right Progress Sidebar */}
             <View style={styles.progressSidebar}>
               <Text style={styles.progressTitle}>PROGRESS</Text>
-              
+
               <View style={styles.progressList}>
-                {/* Completed 1 */}
-                <View style={[styles.progressItem, { backgroundColor: '#be123c' }]}>
-                  <Ionicons name="checkmark-circle" size={20} color="#fecdd3" style={styles.progressIcon} />
-                </View>
-                {/* Completed 2 */}
-                <View style={[styles.progressItem, { backgroundColor: '#ea580c' }]}>
-                  <Ionicons name="checkmark-circle" size={20} color="#ffedd5" style={styles.progressIcon} />
-                </View>
-                {/* Current (Blue) */}
-                <View style={styles.progressCurrentRing}>
-                  <View style={[styles.progressItem, { backgroundColor: '#06b6d4', height: 45 }]} />
-                </View>
-                {/* Locked 1 */}
-                <View style={[styles.progressItem, { backgroundColor: '#475569' }]}>
-                  <Ionicons name="lock-closed" size={16} color="#64748b" style={styles.progressIcon} />
-                </View>
-                {/* Locked 2 */}
-                <View style={[styles.progressItem, { backgroundColor: '#475569' }]}>
-                  <Ionicons name="lock-closed" size={16} color="#64748b" style={styles.progressIcon} />
-                </View>
+                {[0, 1, 2, 3, 4].map((idx) => {
+                  const targetSlotGlobalIdx = (targetLevel - 1) * 5 + idx;
+                  const targetData = getCrayonColorData(targetSlotGlobalIdx);
+
+                  if (idx < currentCrayonIdx) {
+                    // Completed in this session
+                    return (
+                      <View key={idx} style={[styles.progressItem, { backgroundColor: targetData.core }]}>
+                        <Ionicons name="checkmark-circle" size={20} color="rgba(255,255,255,0.8)" style={styles.progressIcon} />
+                      </View>
+                    );
+                  } else if (idx === currentCrayonIdx) {
+                    // Current Active
+                    return (
+                      <View key={idx} style={[styles.progressCurrentRing, { borderColor: activeColor }]}>
+                        <View style={[styles.progressItem, { backgroundColor: activeColor, height: 45 }]} />
+                      </View>
+                    );
+                  } else {
+                    // Future in this level
+                    return (
+                      <View key={idx} style={[styles.progressItem, { backgroundColor: targetData.core }]}>
+                        <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 12 }]} />
+                        {targetSlotGlobalIdx > unlockedCrayons && (
+                          <Ionicons name="lock-closed" size={16} color="rgba(255,255,255,0.7)" style={styles.progressIcon} />
+                        )}
+                      </View>
+                    );
+                  }
+                })}
               </View>
             </View>
           </View>
@@ -169,16 +331,12 @@ export default function GameScreen({ navigation }) {
             <LinearGradient colors={['#1e1b4b', '#0f172a']} style={styles.navBar}>
               <TouchableOpacity style={styles.navItem} onPress={() => navigation.navigate('Home')}>
                 <Ionicons name="home-outline" size={24} color="#94a3b8" />
+                <Text style={styles.navText}>LOBBY</Text>
               </TouchableOpacity>
 
-              <TouchableOpacity style={styles.navItem}>
-                <View style={styles.activeNavCircle}>
-                  <Ionicons name="pencil" size={28} color="white" />
-                </View>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={styles.navItem}>
-                <Ionicons name="shapes-outline" size={24} color="#94a3b8" />
+              <TouchableOpacity style={styles.navItem} onPress={() => navigation.navigate('Level')}>
+                <Ionicons name="map-outline" size={24} color="#94a3b8" />
+                <Text style={styles.navText}>MAP</Text>
               </TouchableOpacity>
             </LinearGradient>
           </View>
@@ -239,15 +397,16 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginTop: -2,
   },
-  coinBadge: {
+  starsBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#3b0764',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 15,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#7e22ce',
   },
-  coinText: { color: '#fef08a', fontWeight: '800', marginRight: 5 },
   mainContent: {
     flex: 1,
     flexDirection: 'row',
@@ -407,5 +566,11 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.6,
     shadowRadius: 10,
+  },
+  navText: {
+    color: '#94a3b8',
+    fontSize: 10,
+    fontWeight: '800',
+    marginTop: 4,
   },
 });
