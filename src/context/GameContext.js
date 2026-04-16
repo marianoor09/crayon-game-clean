@@ -78,10 +78,22 @@ export const GameProvider = ({ children }) => {
     } catch (e) {}
   };
 
+  const getColorName = (hue) => {
+    if (hue >= 330 || hue < 15) return 'RED';
+    if (hue >= 15 && hue < 45) return 'ORANGE';
+    if (hue >= 45 && hue < 75) return 'YELLOW';
+    if (hue >= 75 && hue < 150) return 'GREEN';
+    if (hue >= 150 && hue < 210) return 'CYAN';
+    if (hue >= 210 && hue < 270) return 'BLUE';
+    if (hue >= 270 && hue < 330) return 'PURPLE';
+    return 'CRAYON';
+  };
+
   const getCrayonColorData = (index) => {
     const hue = Math.floor((index * 137.5) % 360);
     
     return {
+      name: getColorName(hue),
       core: hslToHex(hue, 90, 45),
       top: hslToHex(hue, 90, 55),
       bottom: hslToHex(hue, 90, 30),

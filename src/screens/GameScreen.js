@@ -1,19 +1,19 @@
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import MaskedView from '@react-native-masked-view/masked-view';
-import { Canvas, Group, Path, Rect, Skia } from '@shopify/react-native-skia';
-import { LinearGradient } from 'expo-linear-gradient';
-import { useState, useEffect, useRef } from 'react';
+import { Ionicons } from '@expo/vector-icons';
+import { Canvas, Circle, Group, Mask, Path, Rect, Skia, Text as SkiaText, useFont } from '@shopify/react-native-skia';
 import { Audio } from 'expo-av';
 import * as Haptics from 'expo-haptics';
-import { Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useEffect, useRef, useState } from 'react';
+import { Dimensions, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
-import Animated, { runOnJS, useSharedValue, useAnimatedStyle, withTiming, withSpring, withSequence } from 'react-native-reanimated';
+import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withSequence, withSpring, withTiming } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useGame } from '../context/GameContext';
 
 const { width, height } = Dimensions.get('window');
 const WRAPPER_WIDTH = 62;
-const WRAPPER_HEIGHT = height * 0.65 - 80;
+const TOTAL_CRAYON_HEIGHT = height * 0.50;
+const WRAPPER_HEIGHT = TOTAL_CRAYON_HEIGHT - 80; // 40 (top) + 40 (bottom)
 
 const AnimatedIcon = Animated.createAnimatedComponent(Ionicons);
 
@@ -44,11 +44,11 @@ const TopStar = ({ index, activeIndex, unwrapped }) => {
   }));
 
   return (
-    <AnimatedIcon 
-      name="star" 
-      size={18} 
-      color="#fef08a" 
-      style={[{ marginHorizontal: 2 }, style]} 
+    <AnimatedIcon
+      name="star"
+      size={18}
+      color="#fef08a"
+      style={[{ marginHorizontal: 2 }, style]}
     />
   );
 };
@@ -62,8 +62,12 @@ export default function GameScreen({ navigation, route }) {
     return targetLevel < currentLevel ? 0 : crayonsInCurrentLevel;
   });
 
+  const font = useFont(Platform.select({ android: 'Roboto', ios: 'Arial' }), 24);
+  const smallFont = useFont(Platform.select({ android: 'Roboto', ios: 'Arial' }), 12);
+
   const [unwrapped, setUnwrapped] = useState(false);
   const isUnwrapped = useSharedValue(false);
+  const scratchedRegions = useSharedValue(0);
   const scratchScore = useSharedValue(0);
   const [scratchSound, setScratchSound] = useState(null);
   const [successSound, setSuccessSound] = useState(null);
@@ -90,9 +94,9 @@ export default function GameScreen({ navigation, route }) {
     pauseBgMusic();
 
     return () => {
-       scratchSound?.unloadAsync();
-       successSound?.unloadAsync();
-       playBgMusic();
+      scratchSound?.unloadAsync();
+      successSound?.unloadAsync();
+      playBgMusic();
     };
   }, []);
 
@@ -106,26 +110,26 @@ export default function GameScreen({ navigation, route }) {
 
   const playScratchFeedback = async () => {
     if (scratchSound) {
-       const status = await scratchSound.getStatusAsync();
-       if (!status.isPlaying && !isUnwrapped.value) {
-         await scratchSound.playAsync();
-       }
+      const status = await scratchSound.getStatusAsync();
+      if (!status.isPlaying && !isUnwrapped.value) {
+        await scratchSound.playAsync();
+      }
     }
   };
 
   const stopScratchFeedback = async () => {
     if (scratchSound) {
-       await scratchSound.pauseAsync();
+      await scratchSound.pauseAsync();
     }
   };
 
   const playSuccessFeedback = async () => {
     if (scratchSound) {
-       await scratchSound.stopAsync();
+      await scratchSound.stopAsync();
     }
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     if (successSound) {
-       await successSound.playFromPositionAsync(0);
+      await successSound.playFromPositionAsync(0);
     }
   };
 
@@ -134,7 +138,7 @@ export default function GameScreen({ navigation, route }) {
       if (!prev) {
         isUnwrapped.value = true;
         playSuccessFeedback();
-        
+
         setTimeout(() => {
           // If we are playing the current 'latest' crayon, advance global progress
           if (currentGlobalIdx === unlockedCrayons) {
@@ -144,16 +148,17 @@ export default function GameScreen({ navigation, route }) {
           const nextLocalIdx = currentCrayonIdx + 1;
 
           if (nextLocalIdx === 5) {
-             navigation.replace('Victory', { colorUnlocked: activeColor });
+            navigation.replace('Victory', { colorUnlocked: activeColor });
           } else {
-             // Reset canvas for next crayon color automatically!
-             setCurrentCrayonIdx(nextLocalIdx);
-             isUnwrapped.value = false;
-             scratchScore.value = 0;
-             setUnwrapped(false);
-             path.value = Skia.Path.Make();
+            // Reset canvas for next crayon color automatically!
+            setCurrentCrayonIdx(nextLocalIdx);
+            isUnwrapped.value = false;
+            scratchedRegions.value = 0;
+            scratchScore.value = 0;
+            setUnwrapped(false);
+            path.value = Skia.Path.Make();
           }
-        }, 1200);
+        }, 2000);
       }
       return true;
     });
@@ -175,35 +180,44 @@ export default function GameScreen({ navigation, route }) {
         const newPath = path.value.copy();
         newPath.lineTo(e.x, e.y);
         path.value = newPath;
+
         scratchScore.value += 1;
+
+        // Calculate which region (0-19) the finger is in
+        const regionIndex = Math.floor((e.y / WRAPPER_HEIGHT) * 20);
+        if (regionIndex >= 0 && regionIndex < 20) {
+          scratchedRegions.value = scratchedRegions.value | (1 << regionIndex);
+        }
+
+        // Count set bits
+        let bits = scratchedRegions.value;
+        let count = 0;
+        while (bits > 0) {
+          if (bits & 1) count++;
+          bits >>= 1;
+        }
+
+        if (count >= 12 && scratchScore.value > 120) {
+          console.log(`[Scratch] Win Triggered! Regions: ${count}, Score: ${scratchScore.value}`);
+          runOnJS(checkUnwrapped)();
+        } else {
+          // Log progress occasionally to avoid spamming too much
+          if (scratchScore.value % 50 === 0) {
+            console.log(`[Scratch] Progress - Regions: ${count}, Score: ${scratchScore.value}`);
+          }
+        }
       }
     })
     .onEnd(() => {
       if (!isUnwrapped.value) {
         runOnJS(stopScratchFeedback)();
-        if (scratchScore.value > 150) {
-          runOnJS(checkUnwrapped)();
-        }
       }
     })
     .onFinalize(() => {
       runOnJS(stopScratchFeedback)();
     });
 
-  const WrapperElement = (
-    <LinearGradient
-      colors={activeColorData.wrapperColors}
-      style={styles.wrapperBg}
-      start={{ x: 0, y: 0 }}
-      end={{ x: 1, y: 0 }}
-    >
-      <View style={styles.wrapperLine} />
-      <Ionicons name="color-palette" size={28} color="#000" style={{ marginTop: 15 }} />
-      <Text style={styles.wrapperText}>CRAYON</Text>
-      <Ionicons name="sparkles" size={28} color="#000" style={{ marginBottom: 15 }} />
-      <View style={styles.wrapperLine} />
-    </LinearGradient>
-  );
+
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
@@ -229,11 +243,11 @@ export default function GameScreen({ navigation, route }) {
 
               <View style={styles.starsBadge}>
                 {[0, 1, 2, 3, 4].map((i) => (
-                  <TopStar 
-                    key={i} 
-                    index={i} 
-                    activeIndex={currentCrayonIdx} 
-                    unwrapped={unwrapped} 
+                  <TopStar
+                    key={i}
+                    index={i}
+                    activeIndex={currentCrayonIdx}
+                    unwrapped={unwrapped}
                   />
                 ))}
               </View>
@@ -251,30 +265,70 @@ export default function GameScreen({ navigation, route }) {
                 <View style={[styles.crayonBody, { backgroundColor: activeColorData.core }]} />
                 <View style={[styles.crayonBottom, { backgroundColor: activeColorData.bottom }]} />
 
-                {/* The Scratchable Wrapper */}
-                <View style={styles.wrapperPositioner}>
-                  <GestureDetector gesture={pan}>
-                    <MaskedView
-                      style={styles.maskedContainer}
-                      maskElement={
-                        <Canvas style={{ flex: 1 }}>
-                          <Group layer={true}>
-                            <Rect x={0} y={0} width={WRAPPER_WIDTH} height={500} color="black" />
+                {/* The Scratchable Wrapper (Pure Skia Implementation) */}
+                <View style={[styles.wrapperPositioner, { height: WRAPPER_HEIGHT }]}>
+                  <GestureDetector gesture={pan} key={`crayon-${currentCrayonIdx}`}>
+                    <Canvas style={styles.maskCanvas}>
+                      <Mask
+                        mode="alpha"
+                        mask={
+                          <Group>
+                            <Rect x={0} y={0} width={WRAPPER_WIDTH} height={WRAPPER_HEIGHT} color="white" />
                             <Path
                               path={path}
-                              color="transparent"
+                              color="black"
                               style="stroke"
-                              strokeWidth={35}
+                              strokeWidth={85}
                               strokeCap="round"
                               strokeJoin="round"
                               blendMode="clear"
                             />
                           </Group>
-                        </Canvas>
-                      }
-                    >
-                      {WrapperElement}
-                    </MaskedView>
+                        }
+                      >
+                        {/* Sticker Background (Light Cream/White) */}
+                        <Rect x={0} y={0} width={WRAPPER_WIDTH} height={WRAPPER_HEIGHT} color={activeColorData.wrapperColors[0]} />
+
+                        {/* Palette Icon Section */}
+                        <Group transform={[{ translate: [WRAPPER_WIDTH / 2, 65] }]}>
+                          <Circle cx={0} cy={0} r={12} color="#0f172a" />
+                          <Circle cx={-4} cy={-3} r={2.5} color={activeColorData.core} />
+                          <Circle cx={4} cy={-3} r={2.5} color={activeColorData.top} />
+                          <Circle cx={0} cy={4} r={2.5} color={activeColorData.bottom} />
+                        </Group>
+
+                        {/* Top Divider Line (Below Palette) */}
+                        <Rect x={10} y={100} width={WRAPPER_WIDTH - 20} height={1.5} color="rgba(15,23,42,0.15)" />
+
+                        {/* Color Name (Vertical & Centered) */}
+                        {font && activeColorData.name && (
+                          <Group transform={[{ translate: [WRAPPER_WIDTH / 2 + 8, WRAPPER_HEIGHT / 2] }, { rotate: Math.PI / 2 }]}>
+                            <SkiaText
+                              text={activeColorData.name}
+                              x={-(font.measureText(activeColorData.name).width / 2)}
+                              y={0}
+                              font={font}
+                              color="#0f172a"
+                            />
+                          </Group>
+                        )}
+
+                        {/* Bottom Divider Line (Above Sparkles) */}
+                        <Rect x={10} y={WRAPPER_HEIGHT - 100} width={WRAPPER_WIDTH - 20} height={1.5} color="rgba(15,23,42,0.15)" />
+
+                        {/* Sparkle Icon Section */}
+                        <Group transform={[{ translate: [WRAPPER_WIDTH / 2, WRAPPER_HEIGHT - 65] }]}>
+                          <Circle cx={0} cy={0} r={10} color="#0f172a" />
+                          <Path
+                            path="M0-12 L2-2 L12 0 L2 2 L0 12 L-2 2 L-12 0 L-2-2 Z"
+                            color="white"
+                            transform={[{ scale: 0.5 }]}
+                          />
+                          <Circle cx={6} cy={6} r={3.5} color="#0f172a" />
+                          <Circle cx={6} cy={6} r={1.5} color="white" />
+                        </Group>
+                      </Mask>
+                    </Canvas>
                   </GestureDetector>
                 </View>
               </View>
@@ -468,13 +522,13 @@ const styles = StyleSheet.create({
   },
   crayonContainer: {
     width: 80,
-    height: '65%',
+    height: TOTAL_CRAYON_HEIGHT,
     alignItems: 'center',
     transform: [{ rotate: '-8deg' }],
   },
   crayonTop: {
     width: 60,
-    height: 60,
+    height: 40,
     backgroundColor: '#22d3ee',
     borderTopLeftRadius: 30,
     borderTopRightRadius: 30,
@@ -486,40 +540,71 @@ const styles = StyleSheet.create({
   },
   crayonBottom: {
     width: 60,
-    height: 20,
+    height: 40,
     backgroundColor: '#0891b2',
     borderBottomLeftRadius: 10,
     borderBottomRightRadius: 10,
   },
   wrapperPositioner: {
     position: 'absolute',
-    top: 50,
-    bottom: 30,
+    top: 40,
+    bottom: 40,
     width: WRAPPER_WIDTH,
+    zIndex: 10,
+    elevation: 10,
   },
   maskedContainer: {
     flex: 1,
+    width: WRAPPER_WIDTH,
+  },
+  maskElementContainer: {
+    flex: 1,
+    backgroundColor: 'transparent',
+  },
+  maskCanvas: {
+    flex: 1,
+  },
+  stickerWrapper: {
+    flex: 1,
+    backgroundColor: '#fff',
+    borderRadius: 5,
+    overflow: 'hidden',
   },
   wrapperBg: {
     flex: 1,
     alignItems: 'center',
-    justifyContent: 'space-around',
+    justifyContent: 'space-between',
     paddingVertical: 10,
-    borderTopLeftRadius: 5,
-    borderTopRightRadius: 5,
+    borderRadius: 5,
+    overflow: 'hidden',
   },
-  wrapperLine: {
-    width: '80%',
-    height: 2,
-    backgroundColor: 'rgba(0,0,0,0.1)',
+  wrapperTopDecor: {
+    width: '100%',
+    height: 10,
+    backgroundColor: 'rgba(255,255,255,0.4)',
+    borderBottomWidth: 1,
+    borderColor: 'rgba(0,0,0,0.05)',
+  },
+  wrapperBottomDecor: {
+    width: '100%',
+    height: 15,
+    backgroundColor: 'rgba(255,255,255,0.4)',
+    borderTopWidth: 1,
+    borderColor: 'rgba(0,0,0,0.05)',
+  },
+  stickerContent: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   wrapperText: {
-    color: '#000',
-    fontSize: 22,
+    color: '#1e293b',
+    fontSize: 28,
     fontWeight: '900',
-    letterSpacing: 2,
+    letterSpacing: 4,
     transform: [{ rotate: '90deg' }],
-    marginVertical: 35,
+    marginVertical: 45,
+    opacity: 0.8,
   },
   instructionPill: {
     backgroundColor: '#2e1065',
